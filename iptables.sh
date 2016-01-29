@@ -1,0 +1,113 @@
+#!/bin/bash
+
+# The location of the IPtables binary file on your system.
+IPT=$(which iptables)
+IP6T=$(which ip6tables)
+MODPROBE=$(which modprobe)
+# INT_NET=192.168.2.0/24
+
+# The network interface we will be protecting
+INT="eth0"
+
+PARENT=$(ps aux | awk -v pid="$PPID" '$2 ~ pid {print $NF}')
+logger --tag iptables $PARENT starting iptables.sh
+
+# The following rules will clear out any existing firewall rules,
+# and any chains that might have been created.
+$IPT --flush
+$IPT --flush INPUT
+$IPT --flush OUTPUT
+$IPT --flush FORWARD
+$IPT --flush --table mangle
+$IPT --flush --table nat
+$IPT --delete-chain
+
+# These will setup our policies.
+$IPT --policy INPUT ACCEPT
+$IPT --policy OUTPUT ACCEPT
+$IPT --policy FORWARD ACCEPT
+
+# no ip6 for the time being
+$IP6T --flush
+$IP6T --flush INPUT
+$IP6T --flush OUTPUT
+$IP6T --flush FORWARD
+$IP6T --policy INPUT DROP
+$IP6T --policy OUTPUT DROP
+$IP6T --policy FORWARD DROP
+
+logger --tag iptables cleared all tables and chains
+echo "Cleared all tables and chains"
+if [ "$1" = "clear" ]; then
+    exit
+fi
+
+### load connection-tracking modules
+$MODPROBE ip_conntrack
+
+# The following line below enables IP forwarding and thus
+# by extension, NAT. Turn this on if you're going to be
+# doing NAT or IP Masquerading.
+#echo 1 > /proc/sys/net/ipv4/ip_forward
+
+# Now, our firewall chain. We use the limit commands to
+# cap the rate at which it alerts to 15 log messages per minute.
+$IPT --new-chain firewall
+$IPT --append firewall --match limit --limit 15/minute --jump LOG --log-prefix "Firewall: "
+$IPT --append firewall --jump DROP
+
+# Now, our dropwall chain, for the final catchall filter.
+$IPT --new-chain dropwall
+$IPT --append dropwall --match limit --limit 15/minute --jump LOG --log-prefix "Dropwall: "
+$IPT --append dropwall --jump DROP
+
+# Our "hey, them's some bad tcp flags!" chain.
+$IPT --new-chain badflags
+$IPT --append badflags --match limit --limit 15/minute --jump LOG --log-prefix "Badflags: "
+$IPT --append badflags --jump DROP
+
+# First lets do some basic state-matching. This allows us
+# to accept related and established connections, so
+# connections initiated client-side work.
+$IPT --insert INPUT --match conntrack --ctstate ESTABLISHED,RELATED --jump ACCEPT
+
+
+# This rule will accept connections from local machines. If you have
+# a home network, enter in the IP's of the machines on the
+# network below.
+$IPT --append INPUT --in-interface lo --jump ACCEPT
+# Allow ip6 only as loopback
+$IP6T --append INPUT --in-interface lo --jump ACCEPT
+$IP6T --append INPUT --source ::1 --destination 0/0 --protocol all --jump ACCEPT
+$IP6T --append OUTPUT --source ::1 --destination 0/0 --protocol all --jump ACCEPT
+#$IPT --append INPUT --source $INT_NET --destination 0/0 --protocol all --jump ACCEPT
+#$IPT --append INPUT --source 10.1.1.51 --destination 0/0 --protocol all --jump ACCEPT
+#$IPT --append INPUT --source 10.1.1.52 --destination 0/0 --protocol all --jump ACCEPT
+
+# Drop those nasty packets! These are all TCP flag
+# combinations that should never, ever occur in the
+# wild. All of these are illegal combinations that
+# are used to attack a box in various ways, so we
+# just drop them and log them here.
+$IPT --append INPUT --protocol tcp --tcp-flags ALL FIN,URG,PSH --jump badflags
+$IPT --append INPUT --protocol tcp --tcp-flags ALL ALL --jump badflags
+$IPT --append INPUT --protocol tcp --tcp-flags ALL SYN,RST,ACK,FIN,URG --jump badflags
+$IPT --append INPUT --protocol tcp --tcp-flags ALL NONE --jump badflags
+$IPT --append INPUT --protocol tcp --tcp-flags SYN,RST SYN,RST --jump badflags
+$IPT --append INPUT --protocol tcp --tcp-flags SYN,FIN SYN,FIN --jump badflags
+
+############################################################################################
+# Okay, now for our services
+############################################################################################
+
+# ssh
+$IPT --append INPUT --in-interface $INT --protocol tcp --dport 22 --jump ACCEPT
+# open_vpn
+$IPT --append INPUT --in-interface $INT --protocol udp --dport 1194 --jump ACCEPT
+
+
+# Our final trap. Everything on INPUT goes to the dropwall
+# so we don't get silent drops.
+$IPT --append INPUT --jump dropwall
+logger --tag iptables setting iptables rules finished
+echo "Applied everyting perfectly"
