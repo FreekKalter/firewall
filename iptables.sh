@@ -1,8 +1,8 @@
 #!/bin/bash
 
 # The location of the IPtables binary file on your system.
-IPT=$(which iptables)
-IP6T=$(which ip6tables)
+IPT="$(which iptables) --wait"
+IP6T="$(which ip6tables) --wait"
 MODPROBE=$(which modprobe)
 # INT_NET=192.168.2.0/24
 
@@ -10,7 +10,6 @@ MODPROBE=$(which modprobe)
 INT="eth0"
 
 PARENT=$(ps aux | awk -v pid="$PPID" '$2 ~ pid {print $NF}')
-logger --tag iptables $PARENT starting iptables.sh
 
 # The following rules will clear out any existing firewall rules,
 # and any chains that might have been created.
@@ -36,7 +35,6 @@ $IP6T --policy INPUT DROP
 $IP6T --policy OUTPUT DROP
 $IP6T --policy FORWARD DROP
 
-logger --tag iptables cleared all tables and chains
 echo "Cleared all tables and chains"
 if [ "$1" = "clear" ]; then
     exit
@@ -50,16 +48,10 @@ $MODPROBE ip_conntrack
 # doing NAT or IP Masquerading.
 #echo 1 > /proc/sys/net/ipv4/ip_forward
 
-# Now, our firewall chain. We use the limit commands to
-# cap the rate at which it alerts to 15 log messages per minute.
-$IPT --new-chain firewall
-$IPT --append firewall --match limit --limit 15/minute --jump LOG --log-prefix "Firewall: "
-$IPT --append firewall --jump DROP
-
-# Now, our dropwall chain, for the final catchall filter.
-$IPT --new-chain dropwall
-$IPT --append dropwall --match limit --limit 15/minute --jump LOG --log-prefix "Dropwall: "
-$IPT --append dropwall --jump DROP
+# Now, our LogAndDrop chain, for the final catchall filter.
+$IPT --new-chain LogAndDrop
+$IPT --append LogAndDrop --match limit --limit 15/minute --jump LOG --log-prefix "LogAndDrop: "
+$IPT --append LogAndDrop --jump DROP
 
 # Our "hey, them's some bad tcp flags!" chain.
 $IPT --new-chain badflags
@@ -96,18 +88,15 @@ $IPT --append INPUT --protocol tcp --tcp-flags ALL NONE --jump badflags
 $IPT --append INPUT --protocol tcp --tcp-flags SYN,RST SYN,RST --jump badflags
 $IPT --append INPUT --protocol tcp --tcp-flags SYN,FIN SYN,FIN --jump badflags
 
+
 ############################################################################################
 # Okay, now for our services
 ############################################################################################
 
 # ssh
 $IPT --append INPUT --in-interface $INT --protocol tcp --dport 22 --jump ACCEPT
-# open_vpn
-$IPT --append INPUT --in-interface $INT --protocol udp --dport 1194 --jump ACCEPT
 
-
-# Our final trap. Everything on INPUT goes to the dropwall
+# Our final trap. Everything on INPUT goes to the LogAndDrop
 # so we don't get silent drops.
-$IPT --append INPUT --jump dropwall
-logger --tag iptables setting iptables rules finished
-echo "Applied everyting perfectly"
+$IPT --append INPUT --jump LogAndDrop
+echo "Applied all iptables rules"
