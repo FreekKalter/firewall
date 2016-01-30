@@ -1,0 +1,12 @@
+[Unit]
+Description=Configure iptables
+After=network.target
+Before=fail2ban.service docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/iptables.sh
+# ExecStop=/usr/local/sbin/iptables.sh clear
+
+[Install]
+WantedBy=multi-user.target
